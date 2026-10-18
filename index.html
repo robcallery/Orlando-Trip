@@ -1295,21 +1295,33 @@ const NEWS={
 };
 let nwTab='N',nwSel=0,nwTok=0;
 function nwAgo(d){const m=Math.round((Date.now()-d)/60000);if(!(m>=0))return '';if(m<60)return m+' min ago';if(m<1440)return Math.round(m/60)+' h ago';return Math.round(m/1440)+' d ago'}
+async function nwGet(url,ms){
+  const ctl=window.AbortController?new AbortController():null;const to=setTimeout(()=>ctl&&ctl.abort(),ms);
+  try{const r=await fetch(url,ctl?{signal:ctl.signal}:{});if(!r.ok)throw new Error('HTTP '+r.status);return r}finally{clearTimeout(to)}
+}
+function nwParseXml(txt){
+  const x=new DOMParser().parseFromString(txt,'text/xml');
+  return [...x.querySelectorAll('item')].slice(0,8).map(i=>({t:(i.querySelector('title')||{}).textContent||'',l:(i.querySelector('link')||{}).textContent||'',d:Date.parse((i.querySelector('pubDate')||{}).textContent||'')||0}));
+}
+let nwWhy='';
 async function nwLoad(src){
   if(!src.feed)return null;
-  const ck='nw:'+src.k;
-  try{
-    const ctl=window.AbortController?new AbortController():null;const to=setTimeout(()=>ctl&&ctl.abort(),5000);
-    const r=await fetch(src.feed,ctl?{signal:ctl.signal}:{});clearTimeout(to);
-    const x=new DOMParser().parseFromString(await r.text(),'text/xml');
-    const it=[...x.querySelectorAll('item')].slice(0,8).map(i=>({t:(i.querySelector('title')||{}).textContent||'',l:(i.querySelector('link')||{}).textContent||'',d:Date.parse((i.querySelector('pubDate')||{}).textContent||'')||0})).filter(i=>i.t&&/^https?:/.test(i.l));
-    if(!it.length)throw 0;
-    try{localStorage.setItem(ck,JSON.stringify({at:Date.now(),it}))}catch(e){}
-    return {it,cached:false};
-  }catch(e){
-    try{const c=JSON.parse(localStorage.getItem(ck)||'null');if(c&&c.it&&c.it.length)return {it:c.it,cached:c.at}}catch(e2){}
-    return null;
+  const ck='nw:'+src.k;nwWhy='';
+  const tries=[
+    async()=>nwParseXml(await (await nwGet(src.feed,6000)).text()),
+    async()=>{const j=await (await nwGet('https://api.rss2json.com/v1/api.json?rss_url='+encodeURIComponent(src.feed),9000)).json();if(j.status!=='ok')throw new Error('rss2json '+j.status);return (j.items||[]).slice(0,8).map(i=>({t:i.title,l:i.link,d:Date.parse((i.pubDate||'').replace(' ','T')+'Z')||0}))},
+    async()=>nwParseXml(await (await nwGet('https://api.allorigins.win/raw?url='+encodeURIComponent(src.feed),9000)).text())
+  ];
+  for(let n=0;n<tries.length;n++){
+    try{
+      const it=(await tries[n]()).filter(i=>i.t&&/^https?:/.test(i.l));
+      if(!it.length)throw new Error('no items');
+      try{localStorage.setItem(ck,JSON.stringify({at:Date.now(),it}))}catch(e){}
+      return {it,cached:false};
+    }catch(e){nwWhy+=(nwWhy?' · ':'')+(n+1)+': '+((e&&e.message)||'failed')}
   }
+  try{const c=JSON.parse(localStorage.getItem(ck)||'null');if(c&&c.it&&c.it.length)return {it:c.it,cached:c.at}}catch(e2){}
+  return null;
 }
 async function renderNews(){
   $('nwTabN').classList.toggle('on',nwTab==='N');$('nwTabS').classList.toggle('on',nwTab==='S');
@@ -1321,7 +1333,7 @@ async function renderNews(){
   $('nwList').innerHTML='<div class="note">Checking for headlines…</div>'+links;
   const r=await nwLoad(src);
   if(tok!==nwTok)return;
-  if(!r){$('nwList').innerHTML='<div class="note">'+esc(src.note||'Tap a source below to read the latest stories. They open in your browser.')+'</div>'+links;return;}
+  if(!r){$('nwList').innerHTML='<div class="note">'+esc(src.note||'Tap a source below to read the latest stories. They open in your browser.')+'</div>'+(src.note||!nwWhy?'':'<div class="tip" style="margin:6px 2px">Why headlines did not load: '+esc(nwWhy)+'</div>')+links;return;}
   $('nwList').innerHTML=(r.cached?`<div class="note">Showing headlines saved ${esc(nwAgo(r.cached))}. Connect to the internet to refresh them.</div>`:'')+r.it.map(i=>`<div class="item shop"><div class="title">${esc(i.t)}</div><div class="where">${i.d?esc(nwAgo(i.d)):''}</div><div class="acts" style="grid-template-columns:1fr"><a class="map" href="${esc(i.l)}" target="_blank" rel="noopener">Read</a></div></div>`).join('')+links;
 }
 $('nwTabN').onclick=()=>{nwTab='N';nwSel=0;renderNews()};$('nwTabS').onclick=()=>{nwTab='S';nwSel=0;renderNews()};
